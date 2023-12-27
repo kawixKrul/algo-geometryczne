@@ -7,3 +7,4 @@ ipython~=8.11.0
 setuptools~=65.5.0
 sortedcontainers~=2.4.0
 ```
+networkx~=3.2.1
