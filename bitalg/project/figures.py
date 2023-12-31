@@ -1,7 +1,10 @@
 from __future__ import annotations
-from functools import reduce
+
+from math import sqrt
+import numpy as np
+from scipy.spatial import Delaunay
+
 from bitalg.visualizer.main import Visualizer
-from collections import Counter
 
 EPS = 1e-14
 
@@ -18,6 +21,11 @@ class Point:
     def __init__(self, x: float, y: float):
         self.x = x
         self.y = y
+        self.neighbors = set()
+        self.triangles = set()
+
+    def to_tuple(self) -> (int, int):
+        return self.x, self.y
 
     def __str__(self):
         return "(" + str(self.x) + ", " + str(self.y) + ")"
@@ -31,48 +39,39 @@ class Point:
     def __hash__(self):
         return hash((self.x, self.y))
 
-    def __gt__(self, other):
-        if self.x != other.x:
-            return self.x - other.x
-        return self.y - other.y
-
 
 class Triangle:
     def __init__(self, a: Point, b: Point, c: Point):
-        if a > b:
-            a, b = b, a
-        if a > c:
-            a, c = c, a
-        if b > c:
-            b, c = c, b
-
         self.a = a
         self.b = b
         self.c = c
 
-    def __str__(self):
-        return str(self.a) + ", " + str(self.b) + ", " + str(self.c)
+    def to_tuple(self) -> (Point, Point, Point):
+        return self.a, self.b, self.c
 
-    def contains_point(self, point: Point):
+    def contains_point(self, point: Point) -> bool:
+        # check if triangle contains point p
+
         det_ab = det3points(self.a, self.b, point)
         det_bc = det3points(self.b, self.c, point)
         det_ca = det3points(self.c, self.a, point)
 
         return (det_ab > -EPS and det_bc > -EPS and det_ca > -EPS) or (det_ab < EPS and det_bc < EPS and det_ca < EPS)
 
+    def __str__(self):
+        return str(self.a) + ", " + str(self.b) + ", " + str(self.c)
+
     def __eq__(self, other):
-        return self.a == other.a or self.b == other.b or self.c == other.c
+        return self.a == other.a and self.b == other.b and self.c == other.c
 
     def __hash__(self):
         return hash((self.a, self.b, self.c))
 
 
 class Node:
-    def __init__(self, triangle: Triangle, children: list[Node] = None):
-        if children is None:
-            children = []
+    def __init__(self, triangle: Triangle):
         self.triangle = triangle
-        self.children = children
+        self.children = []
 
     def __str__(self):
         return "Triangle: " + str(self.triangle) + "\n" + \
@@ -85,227 +84,119 @@ class Node:
         return hash((self.triangle, self.children))
 
 
-class Triangulation:
-    def __init__(self, triangles: list[Triangle] = None):
-        self.triangles = []
-
-
-class Line:
-    def __init__(self, start: Point, end: Point):
-        self.start = start
-        self.end = end
-
-    def __str__(self):
-        return f'Line({self.start}, {self.end})'
-
-    def __repr__(self):
-        return f'Line({self.start}, {self.end})'
-
-    def __contains__(self, item):
-        return item == self.start or item == self.end
-
-    def other(self, point: Point):
-        if point == self.start:
-            return self.end
-        if point == self.end:
-            return self.start
-        return None
-
-    def orientation(self, p):
-        """
-        Funkcja zwracająca orientację trójki punktów (self.start, self.end, p)
-        -1: Przeciwnie do ruchu zegara
-        0: Punkty są współliniowe
-        1: Zgodnie z ruchem zegara
-        """
-        val = (self.end.y - self.start.y) * (p.x - self.end.x) - (self.end.x - self.start.x) * (p.y - self.end.y)
-        if val == 0:
-            return 0
-        return 1 if val > 0 else -1
-
-    def on_segment(self, p):
-        """
-        Funkcja sprawdzająca, czy punkt p leży na odcinku self
-        """
-        return (min(self.start.x, self.end.x) <= p.x <= max(self.start.x, self.end.x) and
-                min(self.start.y, self.end.y) <= p.y <= max(self.start.y, self.end.y))
-
-    def intersect(self, other):
-        """
-        Funkcja sprawdzająca, czy linie self i other się przecinają
-        """
-        if self.start == other.start or self.start == other.end or self.end == other.start or self.end == other.end:
-            return False
-
-        o1 = self.orientation(other.start)
-        o2 = self.orientation(other.end)
-        o3 = other.orientation(self.start)
-        o4 = other.orientation(self.end)
-
-        if o1 != o2 and o3 != o4:
-            return True
-
-        if o1 == 0 and self.on_segment(other.start):
-            return True
-
-        if o2 == 0 and self.on_segment(other.end):
-            return True
-
-        if o3 == 0 and other.on_segment(self.start):
-            return True
-
-        if o4 == 0 and other.on_segment(self.end):
-            return True
-
-        return False
-
-
-class Polygon:
-    def __init__(self, points: list[Point], triangulation: Triangulation = None, lines: list[Line] = None, llp: Point = None, lrp: Point = None, tlp: Point = None):
+class TriangulatedPointSet:
+    def __init__(self, points: list[Point]):
         self.points = points
-        self.triangulation = triangulation
-        self.lines = lines
-        self.llp = llp
-        self.lrp = lrp
-        self.tlp = tlp
+        self.triangles: set[Triangle] = set()
+        self.triangle_left_point: Point = None
+        self.triangle_right_point: Point = None
+        self.triangle_top_point: Point = None
 
     def __str__(self):
         return str(self.points)
 
-    def __eq__(self, other: Polygon):
+    def __eq__(self, other: TriangulatedPointSet):
         return self.points == other.points
 
     def __hash__(self):
         return hash(self.points)
 
-    def convex_hull(self) -> list[Point]:
-        """
-        Return the convex hull of the given points.
-        """
-        L, R, S = -1, 1, 0
+    def triangulate(self):
+        # Triangulate the point set. Resulting Triangles will be in self.triangles
+        # complexity O(n log n)
 
-        def cmp(a, b) -> int:
-            return (a > b) - (a < b)
+        # use Delaunay triangulation and save result to self.triangles
+        triangulation = Delaunay(np.array(list(map(lambda point: point.to_tuple(), self.points))))
+        self.triangles.clear()
+        for id0, id1, id2 in triangulation.simplices:
+            self.triangles.add(Triangle(self.points[id0], self.points[id1], self.points[id2]))
 
-        def turn(p: Point, q: Point, r: Point) -> int:
-            return cmp((q.x - p.x) * (r.y - p.y) - (r.x - p.x) * (q.y - p.y), 0)
+        # update Point neighbours and triangles
+        for triangle in self.triangles:
+            triangle.a.neighbors.add(triangle.b)
+            triangle.a.neighbors.add(triangle.c)
+            triangle.a.triangles.add(triangle)
 
-        def left_turn(hull: list[Point], r: Point) -> list[Point]:
-            while len(hull) > 1 and turn(hull[-2], hull[-1], r) != L:
-                hull.pop()
-            if not hull or hull[-1] != r:
-                hull.append(r)
-            return hull
+            triangle.b.neighbors.add(triangle.c)
+            triangle.b.neighbors.add(triangle.a)
+            triangle.b.triangles.add(triangle)
 
-        points = self.points.copy()
-        points = sorted(points, key=lambda p: (p.x, p.y))
-        lower = reduce(left_turn, points, [])
-        upper = reduce(left_turn, reversed(points), [])
-        return lower.extend(upper[i] for i in range(1, len(upper) - 1)) or lower
+            triangle.c.neighbors.add(triangle.a)
+            triangle.c.neighbors.add(triangle.b)
+            triangle.c.triangles.add(triangle)
 
-    def cover_with_triangle(self) -> Polygon:
-        hull = self.convex_hull()
+    def cover_with_triangle(self):
+        # Cover the point set with a triangle
+
         lower_left = Point(min(self.points, key=lambda p: p.x).x, min(self.points, key=lambda p: p.y).y)
         upper_right = Point(max(self.points, key=lambda p: p.x).x, max(self.points, key=lambda p: p.y).y)
-        triangle_left_point = Point((lower_left.x - 1)*-2, (lower_left.y - 1)*2)
-        triangle_right_point = Point((upper_right.x + 1)*2, (lower_left.y - 1)*2)
-        triangle_top_point = Point((lower_left.x + upper_right.x) / 2, (upper_right.y + 1)*2)
-        new_points = [triangle_left_point, triangle_right_point, triangle_top_point] + self.points.copy()
-        new_lines = [Line(triangle_left_point, triangle_right_point), Line(triangle_left_point, triangle_top_point),
-                     Line(triangle_right_point, triangle_top_point)] + self.lines.copy()
-        # link convex hull points with outer triangle points
-        for p in hull:
-            llp = Line(triangle_left_point, p)
-            flag = True
-            for l in self.lines+new_lines:
-                if llp.intersect(l):
-                    flag = False
-            if flag:
-                new_lines.append(llp)
-            rlp = Line(triangle_right_point, p)
-            flag = True
-            for l in self.lines+new_lines:
-                if rlp.intersect(l):
-                    flag = False
-            if flag:
-                new_lines.append(rlp)
-            tlp = Line(triangle_top_point, p)
-            flag = True
-            for l in self.lines+new_lines:
-                if tlp.intersect(l):
-                    flag = False
-            if flag:
-                new_lines.append(tlp)
+        self.triangle_left_point = Point(lower_left.x - (upper_right.y - lower_left.y) / sqrt(3) - EPS,
+                                         lower_left.y - EPS)
+        self.triangle_right_point = Point(upper_right.x + (upper_right.y - lower_left.y) / sqrt(3) + EPS,
+                                          lower_left.y - EPS)
+        self.triangle_top_point = Point(lower_left.x + (upper_right.x - lower_left.x) / 2,
+                                        upper_right.y + (upper_right.x - lower_left.x) / 2 * sqrt(3) + EPS)
+        self.points.extend([self.triangle_left_point, self.triangle_right_point, self.triangle_top_point])
 
-        # link convex hull points with each other to eliminate holes
-        for i in range(len(hull)):
-            new_lines.append(Line(hull[i], hull[(i+1) % len(hull)]))
+    def remove_points(self):
+        # delete a set of independent vertices with max degree of 8
+        # complexity O(n)
 
-        return Polygon(points=new_points, triangulation=self.triangulation, lines=self.lines.copy()+new_lines, llp=triangle_left_point, lrp=triangle_right_point, tlp=triangle_top_point)
+        # get a set of independent vertices with max degree of 8
+        # complexity O(n)
+        points_to_delete = set()
+        cant_delete = {self.triangle_left_point, self.triangle_right_point, self.triangle_right_point}
+        for point in self.points:
+            if point in cant_delete:
+                continue
 
-    def remove_point_with_highest_lines(self) -> Polygon:
-        """
-        Funkcja usuwająca punkt o największej liczbie linii
-        """
-        lines = [l for l in self.lines if self.lrp not in l and self.llp not in l and self.tlp not in l]
-        max_lines = Counter(l.start for l in lines)+Counter(l.end for l in self.lines)
-        max_point = max_lines.most_common(1)[0][0]
-        uncovered_lines = [l for l in self.lines if max_point in l]
-        uncovered_points = set([l.other(max_point) for l in uncovered_lines]) - {self.lrp, self.llp, self.tlp}
-        new_lines = [l for l in self.lines if max_point not in l]
-        for p in uncovered_points:
-            llp = Line(self.llp, p)
-            flag = True
-            for l in new_lines:
-                if llp.intersect(l):
-                    flag = False
-            if flag:
-                new_lines.append(llp)
-            rlp = Line(self.lrp, p)
-            flag = True
-            for l in new_lines:
-                if rlp.intersect(l):
-                    flag = False
-            if flag:
-                new_lines.append(rlp)
-            tlp = Line(self.tlp, p)
-            flag = True
-            for l in new_lines:
-                if tlp.intersect(l):
-                    flag = False
-            if flag:
-                new_lines.append(tlp)
-        new_points = [p for p in self.points if p != max_point]
-        return Polygon(points=new_points, triangulation=self.triangulation, lines=new_lines, llp=self.llp, lrp=self.lrp, tlp=self.tlp)
+            if len(point.neighbors) <= 8:
+                # choose vertex with degree <= 8 (at most 8 "neighbors")
+                points_to_delete.add(point)
 
-    def retriangulate(self, points: list[Point]) -> list[Line]:
-        new_lines = []
-        for p in points:
-            llp = Line(self.llp, p)
-            flag = True
-            for l in self.lines+new_lines:
-                if llp.intersect(l):
-                    flag = False
-            if flag:
-                new_lines.append(llp)
-            rlp = Line(self.lrp, p)
-            flag = True
-            for l in self.lines+new_lines:
-                if rlp.intersect(l):
-                    flag = False
-            if flag:
-                new_lines.append(rlp)
-            tlp = Line(self.tlp, p)
-            flag = True
-            for l in self.lines+new_lines:
-                if tlp.intersect(l):
-                    flag = False
-            if flag:
-                new_lines.append(tlp)
-        return new_lines
+                # mark vertices connected to chosen vertex as unavailable (wouldn't be independent)
+                # complexity O(1) since at most 8 neighbors
+                cant_delete.update(locked_point for locked_point in point.neighbors)
 
-    def visualize(self):
+        # delete points one by one
+        # complexity O(n) (O(1) for each point to delete)
+        for point_to_delete in points_to_delete:
+            points_around: set[Point] = point_to_delete.neighbors
+            triangles_to_remove: set[Triangle] = point_to_delete.triangles
+
+            # make a hole
+            self.triangles -= triangles_to_remove
+            self.points.remove(point_to_delete)  # at most 8 triangles
+
+            # update Points around the hole
+            for point in points_around:  # at most 8 points around
+                point.neighbors -= points_around
+                point.neighbors.remove(point_to_delete)
+
+                point.triangles -= point_to_delete.triangles
+
+            # triangulate the hole
+            # complexity O(n log n) but here n <= 8 so still O(1)
+            hole = TriangulatedPointSet(list(points_around))
+            hole.triangulate()
+            self.triangles.update(hole.triangles)
+
+    def visualize(self, name=None, point=None, result_triangle=None):
         vis = Visualizer()
         vis.add_point([(p.x, p.y) for p in self.points])
-        vis.add_line_segment([((l.start.x, l.start.y), (l.end.x, l.end.y)) for l in self.lines])
+        for triangle in self.triangles:
+            vis.add_line_segment((triangle.a.to_tuple(), triangle.b.to_tuple()))
+            vis.add_line_segment((triangle.b.to_tuple(), triangle.c.to_tuple()))
+            vis.add_line_segment((triangle.c.to_tuple(), triangle.a.to_tuple()))
+
+        if point is not None:
+            vis.add_point((point.x, point.y), color="red")
+        if result_triangle is not None:
+            vis.add_line_segment((result_triangle.a.to_tuple(), result_triangle.b.to_tuple()), color="green")
+            vis.add_line_segment((result_triangle.b.to_tuple(), result_triangle.c.to_tuple()), color="green")
+            vis.add_line_segment((result_triangle.c.to_tuple(), result_triangle.a.to_tuple()), color="green")
+
         vis.show()
+        if name is not None:
+            vis.save(name + ".png")
+

@@ -1,122 +1,96 @@
-from figures import Point, Triangle, Node, Line, Polygon
+import copy
+import random
+
+from figures import Point, Node, TriangulatedPointSet
+
+
+def preprocess(points: list[Point]) -> Node:
+    # preprocess the list of points into a graph
+
+    triangulated_point_set = TriangulatedPointSet(points)
+
+    i = 0
+    previous_nodes: list[Node] = []
+    while len(triangulated_point_set.triangles) > 1 or i == 0:
+        # if this is the first step - cover the point set in a triangle and triangulate
+        # otherwise remove independent set of points and triangulate the holes
+        if i != 0:
+            triangulated_point_set.remove_points()
+        else:
+            triangulated_point_set.cover_with_triangle()
+            triangulated_point_set.triangulate()
+        triangulated_point_set.visualize("step" + str(i))
+
+        current_nodes = []
+        for triangle in triangulated_point_set.triangles:
+            # each triangle from current triangulation is a node
+            node = Node(triangle)
+            current_nodes.append(node)
+
+            # add node as child to one of the previous nodes the area of its triangle belonged to
+            for previous_node in previous_nodes:
+                if triangle.contains_point(previous_node.triangle.a) or triangle.contains_point(
+                        previous_node.triangle.b) or triangle.contains_point(previous_node.triangle.c):
+                    node.children.append(previous_node)
+
+        previous_nodes = current_nodes
+        i += 1
+
+    root = previous_nodes[0]
+    return root
 
 
 def locate_point(points: list[Point], point: Point):
-    # most of the actual algorithm is to build the data structure
-    # for testing purposes, data structure is precomputed
+    root = preprocess(points)
 
     curr_node = root
     if not curr_node.triangle.contains_point(point):
         return None
 
     children: list[Node] = curr_node.children
-    print(children)
     while children:
         for node in children:
             if node.triangle.contains_point(point):
                 curr_node = node
-                break
+
+                if not any(pnt in root.triangle.to_tuple() for pnt in node.triangle.to_tuple()):
+                    break
 
         children = curr_node.children
 
-    return curr_node.triangle  # or something else idk
+    if any(pnt in root.triangle.to_tuple() for pnt in curr_node.triangle.to_tuple()):
+        return None
+
+    return curr_node.triangle
 
 
-# test triangle from https://www.iue.tuwien.ac.at/phd/fasching/node82.html
+def test(seed=None, from_x=0, to_x=10, from_y=0, to_y=10, how_many=10, search_for=None):
+    if seed is not None:
+        random.seed(seed)
+    if search_for is None:
+        search_for = Point(random.uniform(from_x, to_x), random.uniform(from_y, to_y))
+    test_points = [Point(random.uniform(from_x, to_x), random.uniform(from_y, to_y)) for _ in range(how_many)]
 
-"""points = [
-    Point(0, 0),
+    print("Test points:\n", test_points)
+    print("Trying to find: ", search_for)
+
+    # deepcopy since I want to use them for something later
+    result = locate_point(copy.deepcopy(test_points), search_for)
+    print("Result: ", result)
+
+    # visualise
+    triangulated_point_set = TriangulatedPointSet(test_points)
+    triangulated_point_set.cover_with_triangle()
+    triangulated_point_set.triangulate()
+    triangulated_point_set.visualize(name="result", point=search_for, result_triangle=result)
+
+
+trivial_points = [
     Point(5, 1),
-    Point(10, 0),
-    Point(4, 3),
-    Point(5, 4),
-    Point(3, 5),
-    Point(6, 6),
-    Point(5, 10)
-]
-
-triangles = [
-    Triangle(points[1], points[2], points[4]),
-    Triangle(points[2], points[4], points[6]),
-    Triangle(points[2], points[6], points[7]),
-    Triangle(points[5], points[6], points[7]),
-    Triangle(points[4], points[5], points[6]),
-    Triangle(points[3], points[4], points[5]),
-    Triangle(points[0], points[3], points[5]),
-    Triangle(points[0], points[1], points[3]),
-    Triangle(points[1], points[3], points[4]),
-
-    Triangle(points[2], points[4], points[7]),
-    Triangle(points[4], points[5], points[7]),
-    Triangle(points[1], points[4], points[5]),
-    Triangle(points[0], points[1], points[4]),
-
-    Triangle(points[0], points[4], points[7]),
-    Triangle(points[0], points[2], points[4]),
-
-    Triangle(points[0], points[2], points[7]),
-]"""
-
-"""nodes = [Node(triangles[i]) for i in range(9)]
-
-# nodes[0].children.append(nodes[0])
-nodes.append(Node(triangles[9], [nodes[1], nodes[2], nodes[3], nodes[4]]))
-nodes.append(Node(triangles[10], [nodes[3], nodes[4]]))
-nodes.append(Node(triangles[11], [nodes[5], nodes[6]]))
-nodes.append(Node(triangles[12], [nodes[5], nodes[6], nodes[7], nodes[8]]))
-
-# nodes[9].children.append(nodes[9])
-nodes.append(Node(triangles[13], [nodes[10], nodes[11]]))
-nodes.append(Node(triangles[14], [nodes[0], nodes[12]]))
-
-nodes.append(Node(triangles[15], [nodes[9], nodes[13], nodes[14]]))
-
-root = nodes[15]"""
-root = Node(None, [])
-
-
-
-#print(locate_point([], Point(4, 5)))
-
-
-points = [
-    #Point(0, 0),
-    Point(5, 1),
-    #Point(10, 0),
     Point(4, 2),
     Point(5, 4),
     Point(3, 5),
-    Point(6, 6),
-    #Point(5, 10)
+    Point(6, 6)
 ]
 
-lines = [
-    Line(points[0], points[1]),
-    Line(points[1], points[2]),
-    Line(points[2], points[3]),
-    Line(points[3], points[4]),
-    Line(points[4], points[0]),
-    Line(points[2], points[4]),
-    Line(points[2], points[0])
-]
-
-test_poly = Polygon(points=points, lines=lines)
-test_poly.visualize()
-
-triangle = test_poly.cover_with_triangle()
-triangle.visualize()
-
-triangle = triangle.remove_point_with_highest_lines()
-triangle.visualize()
-
-triangle = triangle.remove_point_with_highest_lines()
-triangle.visualize()
-
-triangle = triangle.remove_point_with_highest_lines()
-triangle.visualize()
-
-triangle = triangle.remove_point_with_highest_lines()
-triangle.visualize()
-
-triangle = triangle.remove_point_with_highest_lines()
-triangle.visualize()
+test(seed=69420, search_for=Point(6, 4))
